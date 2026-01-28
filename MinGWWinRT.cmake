@@ -511,7 +511,7 @@ function(_mingw_winrt__configure_once)
       message(WARNING
         "MinGW WinRT: Using FROZEN WinRT headers from:\n"
         "  ${_inc_cppwinrt}\n"
-        "MinGW WinRT: Install Windows SDK for full/live support."
+        "MinGW WinRT: While safer, you should install Windows SDK for full/live support."
       )
     else()
       message(STATUS "MinGW WinRT: Using Windows SDK ${_ver} at ${_root} (${_arch})")
