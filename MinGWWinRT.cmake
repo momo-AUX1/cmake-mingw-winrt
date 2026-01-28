@@ -515,6 +515,7 @@ function(_mingw_winrt__configure_once)
       )
     else()
       message(STATUS "MinGW WinRT: Using Windows SDK ${_ver} at ${_root} (${_arch})")
+      message(STATUS "MinGW WinRT: You might need to define order hacks in case of compilation errors or use the frozen SDK with MINGW_WINRT_FORCE_FROZEN_SDK=ON.")
     endif()
 
     if(MINGW_WINRT_USE_WINSTORECOMPAT)
