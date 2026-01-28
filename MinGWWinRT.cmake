@@ -18,6 +18,14 @@ endif()
 set(USE_MINGW_WINRT "${MINGW_USE_WINRT}" CACHE BOOL "Alias for MINGW_USE_WINRT" FORCE)
 
 option(MINGW_WINRT_USE_WINSTORECOMPAT "Link winstorecompat shim when available" ON)
+# - FORCE_LIVE: require Windows SDK to be installed; if not found, fail.
+# - FORCE_FROZEN: skip Windows SDK detection entirely and use bundled Frozen headers.
+option(MINGW_WINRT_FORCE_LIVE_SDK   "Force using an installed Windows SDK (fail if missing)" OFF)
+option(MINGW_WINRT_FORCE_FROZEN_SDK "Force using bundled frozen WinRT headers (skip SDK probing)" OFF)
+
+set(MINGW_WINRT_FROZEN_SDK_ROOT "${CMAKE_CURRENT_LIST_DIR}/winrt/include" CACHE PATH
+  "Path to bundled frozen WinRT headers (folder containing winrt/base.h)")
+
 set(MINGW_WINRT_SCRIPT_OUTPUT "" CACHE FILEPATH "Optional output path for script-mode flag export.")
 set(MINGW_WINRT_SCRIPT_FORMAT "shell" CACHE STRING "Format for script-mode export (shell|cmake)")
 set_property(CACHE MINGW_WINRT_SCRIPT_FORMAT PROPERTY STRINGS shell cmake)
@@ -201,9 +209,122 @@ function(_mingw_winrt__try_sdk_version _out_ok _root _ver _arch)
   set(${_out_ok} TRUE PARENT_SCOPE)
 endfunction()
 
+# This lets Frozen headers work without a Windows SDK installation, as long as the toolchain provides import libs.
+function(_mingw_winrt__find_system_winrt_libs_or_die)
+
+  set(_paths "")
+
+  # Compiler implicit link dirs 
+  if(DEFINED CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES)
+    list(APPEND _paths ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES})
+  endif()
+  if(DEFINED CMAKE_C_IMPLICIT_LINK_DIRECTORIES)
+    list(APPEND _paths ${CMAKE_C_IMPLICIT_LINK_DIRECTORIES})
+  endif()
+
+  # MSYS2 env prefix if present 
+  if(DEFINED ENV{MINGW_PREFIX} AND NOT "$ENV{MINGW_PREFIX}" STREQUAL "")
+    list(APPEND _paths "$ENV{MINGW_PREFIX}/lib")
+  endif()
+
+  # Common MSYS2 absolute locations (covers most real installs)
+  list(APPEND _paths
+    "C:/msys64/mingw64/lib"
+    "C:/msys64/ucrt64/lib"
+    "C:/msys64/clang64/lib"
+    "C:/msys64/usr/lib/w32api"
+  )
+
+  list(REMOVE_DUPLICATES _paths)
+
+  set(_wa "")
+  set(_ro "")
+
+  foreach(_d IN LISTS _paths)
+    if(NOT _wa)
+      _mingw_winrt__lib_find_one(_wa "${_d}" "windowsapp")
+    endif()
+    if(NOT _ro)
+      _mingw_winrt__lib_find_one(_ro "${_d}" "runtimeobject")
+    endif()
+    if(_wa AND _ro)
+      break()
+    endif()
+  endforeach()
+
+  if(NOT _wa OR NOT _ro)
+    message(FATAL_ERROR
+      "MinGW WinRT (Frozen): Could not locate required import libraries.\n"
+      "Need: windowsapp + runtimeobject.\n"
+      "Searched paths:\n"
+      "  ${_paths}\n"
+      "Found windowsapp: ${_wa}\n"
+      "Found runtimeobject: ${_ro}\n"
+      "Tip: MSYS2 typically provides libwindowsapp.a and libruntimeobject.a under /mingw64/lib or /ucrt64/lib."
+    )
+  endif()
+
+  set_property(GLOBAL PROPERTY MINGW_WINRT_LIB_WINDOWSAPP   "${_wa}")
+  set_property(GLOBAL PROPERTY MINGW_WINRT_LIB_RUNTIMEOBJECT "${_ro}")
+
+  # No fixed SDK libdirs in Frozen mode; we link by full paths found above.
+  set_property(GLOBAL PROPERTY MINGW_WINRT_LIBDIR_UM   "")
+  set_property(GLOBAL PROPERTY MINGW_WINRT_LIBDIR_UCRT "")
+endfunction()
+
+function(_mingw_winrt__use_frozen_headers_or_die)
+  _mingw_winrt__normalize_path(_frozen "${MINGW_WINRT_FROZEN_SDK_ROOT}")
+
+  if(NOT _frozen)
+    message(FATAL_ERROR "MinGW WinRT (Frozen): MINGW_WINRT_FROZEN_SDK_ROOT is empty.")
+  endif()
+
+  if(NOT EXISTS "${_frozen}/winrt/base.h")
+    message(FATAL_ERROR
+      "MinGW WinRT (Frozen): Bundled headers not found.\n"
+      "Expected: ${_frozen}/winrt/base.h\n"
+      "Set MINGW_WINRT_FROZEN_SDK_ROOT to the folder containing the 'winrt' directory."
+    )
+  endif()
+
+  set_property(GLOBAL PROPERTY MINGW_WINRT_SDK_ROOT    "${_frozen}")
+  set_property(GLOBAL PROPERTY MINGW_WINRT_SDK_VER     "FROZEN")
+  set_property(GLOBAL PROPERTY MINGW_WINRT_SDK_ARCH    "unknown")
+  set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_CPPWINRT "${_frozen}")
+
+  # These don't exist in Frozen mode; keep empty and filter later.
+  set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_SHARED   "")
+  set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_UM       "")
+  set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_WINRT    "")
+  set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_UCRT     "")
+
+  set_property(GLOBAL PROPERTY MINGW_WINRT_FALLBACK_FROZEN TRUE)
+
+  # libs must still be present somewhere (toolchain or SDK)
+  _mingw_winrt__find_system_winrt_libs_or_die()
+endfunction()
+
 function(_mingw_winrt__resolve_sdk_or_die)
   get_property(_has GLOBAL PROPERTY MINGW_WINRT_SDK_VER SET)
   if(_has)
+    return()
+  endif()
+
+  if(MINGW_WINRT_FORCE_LIVE_SDK AND MINGW_WINRT_FORCE_FROZEN_SDK)
+    message(FATAL_ERROR
+      "MinGW WinRT: Both MINGW_WINRT_FORCE_LIVE_SDK and MINGW_WINRT_FORCE_FROZEN_SDK are ON.\n"
+      "Choose exactly one, or leave both OFF for auto (Live->Frozen fallback)."
+    )
+  endif()
+
+  if(MINGW_WINRT_FORCE_FROZEN_SDK)
+    if(NOT CMAKE_SCRIPT_MODE_FILE)
+      message(STATUS
+        "MinGW WinRT: Forced FROZEN SDK mode. Skipping Windows SDK detection and using bundled headers at:\n"
+        "  ${MINGW_WINRT_FROZEN_SDK_ROOT}"
+      )
+    endif()
+    _mingw_winrt__use_frozen_headers_or_die()
     return()
   endif()
 
@@ -217,11 +338,23 @@ function(_mingw_winrt__resolve_sdk_or_die)
 
   _mingw_winrt__collect_sdk_roots(_roots)
   if(NOT _roots)
-    message(FATAL_ERROR
-      "MINGW_USE_WINRT=ON but no Windows SDK root found.\n"
-      "Looked in common locations and env vars (WindowsSdkDir, WindowsSdkDir_10).\n"
-      "If your SDK is in a non-standard place, set WINRT_WINDOWS_SDK_ROOT in CMake cache."
-    )
+    if(MINGW_WINRT_FORCE_LIVE_SDK)
+      message(FATAL_ERROR
+        "MINGW_USE_WINRT=ON and MINGW_WINRT_FORCE_LIVE_SDK=ON but no Windows SDK root found.\n"
+        "Looked in common locations and env vars (WindowsSdkDir, WindowsSdkDir_10).\n"
+        "If your SDK is in a non-standard place, set WINRT_WINDOWS_SDK_ROOT in CMake cache."
+      )
+    endif()
+
+    if(NOT CMAKE_SCRIPT_MODE_FILE)
+      message(WARNING
+        "MinGW WinRT: No Windows SDK root found.\n"
+        "MinGW WinRT: Falling back to bundled frozen WinRT headers.\n"
+        "MinGW WinRT: Install Windows SDK for full/live support."
+      )
+    endif()
+    _mingw_winrt__use_frozen_headers_or_die()
+    return()
   endif()
 
   foreach(_root IN LISTS _roots)
@@ -244,6 +377,26 @@ function(_mingw_winrt__resolve_sdk_or_die)
       endforeach()
     endif()
   endforeach()
+
+  if(MINGW_WINRT_FORCE_LIVE_SDK)
+    message(FATAL_ERROR
+      "MINGW_USE_WINRT=ON and MINGW_WINRT_FORCE_LIVE_SDK=ON but could not find a usable Windows SDK.\n"
+      "Needs: Include/<ver>/cppwinrt and Lib/<ver>/um/<arch> with windowsapp + runtimeobject import libs.\n"
+      "Tried roots: ${_roots}\n"
+      "If you have the SDK but in a custom location, set WINRT_WINDOWS_SDK_ROOT.\n"
+      "If you want to force a version, set WINRT_WINDOWS_SDK_VERSION (e.g. 10.0.22621.0)."
+    )
+  endif()
+
+  if(NOT CMAKE_SCRIPT_MODE_FILE)
+    message(WARNING
+      "MinGW WinRT: Could not find a usable Windows SDK.\n"
+      "MinGW WinRT: Falling back to bundled frozen WinRT headers.\n"
+      "MinGW WinRT: Install Windows SDK for full/live support."
+    )
+  endif()
+  _mingw_winrt__use_frozen_headers_or_die()
+  return()
 
   message(FATAL_ERROR
     "MINGW_USE_WINRT=ON but could not find a usable Windows SDK.\n"
@@ -324,12 +477,17 @@ function(_mingw_winrt__configure_once)
     "${_inc_um}"
     "${_inc_winrt}"
   )
+
+  list(FILTER _include_dirs EXCLUDE REGEX "^$")
+
   set(_link_dirs "")
   if(EXISTS "${_libdir_ucrt}")
     list(APPEND _link_dirs "${_libdir_ucrt}")
   endif()
   list(APPEND _link_dirs "${_libdir_um}")
   list(REMOVE_DUPLICATES _link_dirs)
+
+  list(FILTER _link_dirs EXCLUDE REGEX "^$")
 
   set(_compile_defines UNICODE _UNICODE WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
   set(_compile_options -municode)
@@ -348,7 +506,17 @@ function(_mingw_winrt__configure_once)
   endif()
 
   if(NOT CMAKE_SCRIPT_MODE_FILE)
-    message(STATUS "MinGW WinRT: Using Windows SDK ${_ver} at ${_root} (${_arch})")
+    get_property(_frozen GLOBAL PROPERTY MINGW_WINRT_FALLBACK_FROZEN)
+    if(_frozen)
+      message(WARNING
+        "MinGW WinRT: Using FROZEN WinRT headers from:\n"
+        "  ${_inc_cppwinrt}\n"
+        "MinGW WinRT: Install Windows SDK for full/live support."
+      )
+    else()
+      message(STATUS "MinGW WinRT: Using Windows SDK ${_ver} at ${_root} (${_arch})")
+    endif()
+
     if(MINGW_WINRT_USE_WINSTORECOMPAT)
       if(_have_winstorecompat)
         message(STATUS "MinGW WinRT: winstorecompat shim enabled (${_winstorecompat})")
