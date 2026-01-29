@@ -33,6 +33,7 @@ set_property(CACHE MINGW_WINRT_SCRIPT_FORMAT PROPERTY STRINGS shell cmake)
 # Optional overrides
 set(WINRT_WINDOWS_SDK_ROOT    "" CACHE PATH   "Optional override: Windows SDK root (e.g. C:/Program Files (x86)/Windows Kits/10)")
 set(WINRT_WINDOWS_SDK_VERSION "" CACHE STRING "Optional override: Windows SDK version (e.g. 10.0.22621.0)")
+set(MINGW_WINRT_SYSROOT "" CACHE PATH "Optional MinGW sysroot containing mingw/lib (e.g. /mingw64/lib)")
 
 include_guard(GLOBAL)
 
@@ -214,6 +215,10 @@ function(_mingw_winrt__find_system_winrt_libs_or_die)
 
   set(_paths "")
 
+  if(MINGW_WINRT_SYSROOT)
+    list(APPEND _paths "${MINGW_WINRT_SYSROOT}/lib")
+  endif()
+
   # Compiler implicit link dirs 
   if(DEFINED CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES)
     list(APPEND _paths ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES})
@@ -227,7 +232,7 @@ function(_mingw_winrt__find_system_winrt_libs_or_die)
     list(APPEND _paths "$ENV{MINGW_PREFIX}/lib")
   endif()
 
-  # Common MSYS2 absolute locations (covers most real installs)
+  # Common MSYS2 absolute locations 
   list(APPEND _paths
     "C:/msys64/mingw64/lib"
     "C:/msys64/ucrt64/lib"
@@ -267,7 +272,6 @@ function(_mingw_winrt__find_system_winrt_libs_or_die)
   set_property(GLOBAL PROPERTY MINGW_WINRT_LIB_WINDOWSAPP   "${_wa}")
   set_property(GLOBAL PROPERTY MINGW_WINRT_LIB_RUNTIMEOBJECT "${_ro}")
 
-  # No fixed SDK libdirs in Frozen mode; we link by full paths found above.
   set_property(GLOBAL PROPERTY MINGW_WINRT_LIBDIR_UM   "")
   set_property(GLOBAL PROPERTY MINGW_WINRT_LIBDIR_UCRT "")
 endfunction()
@@ -292,7 +296,6 @@ function(_mingw_winrt__use_frozen_headers_or_die)
   set_property(GLOBAL PROPERTY MINGW_WINRT_SDK_ARCH    "unknown")
   set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_CPPWINRT "${_frozen}")
 
-  # These don't exist in Frozen mode; keep empty and filter later.
   set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_SHARED   "")
   set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_UM       "")
   set_property(GLOBAL PROPERTY MINGW_WINRT_INCDIR_WINRT    "")
@@ -300,7 +303,6 @@ function(_mingw_winrt__use_frozen_headers_or_die)
 
   set_property(GLOBAL PROPERTY MINGW_WINRT_FALLBACK_FROZEN TRUE)
 
-  # libs must still be present somewhere (toolchain or SDK)
   _mingw_winrt__find_system_winrt_libs_or_die()
 endfunction()
 
